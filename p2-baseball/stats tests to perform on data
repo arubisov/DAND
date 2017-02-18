@@ -1,0 +1,43 @@
+To Exceed Expectations
+
+The following are some statistical tests you can perform on the dataset. Pay attention to the assumptions of the test before applying. I have attached documentation for the tests but it is up to you to do the research and find the appropriate one.
+
+I will assume you have an understanding of Z-tests, T-tests, etc. The following tests are for some specific situations you will encounter i the dataset that we may not have gone into deeply. This part is OPTIONAL, as the rubric indicates, but will be valuable to your career.
+
+Dependent Variable is Continuous
+
+Mann Whitney U-test
+
+Dependent variable is continuous
+Does not assume normal distribution of the dependent variable
+Often used in place of the Independent T-test when samples are not normal
+http://docs.scipy.org/doc/scipy-0.17.0/reference/generated/scipy.stats.mannwhitneyu.html
+One-Way ANOVA Test
+
+Dependent variable is continuous
+Dependent variable is Normally Distributed (this needs to be determined before testing.
+Typically used for 3+ Independent Variables (If 2 or less, the T-test should be performed since it is easier computationally and performs just as well).
+http://docs.scipy.org/doc/scipy-0.16.0/reference/generated/scipy.stats.f_oneway.html
+Kruskal–Wallis Test
+
+Dependent variable is continuous
+Similar to an ANOVA Test but for non-normal distributions (distribution still should be determined just in case a regular ANOVA test can be performed.)
+Typically used for 3+ Independent Variables (If 2 or less, the Mann-Whitney U-test should be performed since it is easier computationally and performs just as well).
+http://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.mstats.kruskalwallis.html
+Dependent Variable is Categorical
+
+Difference in Proportions Test
+
+Dependent variable is categorical
+Typically used to compare the Dependent variable of 2 Independent-Variable Conditions
+Usually involved creating a Contingency Table
+http://statsmodels.sourceforge.net/devel/generated/statsmodels.stats.proportion.proportions_ztest.html#statsmodels.stats.proportion.proportions_ztest
+Chi-Squared Test
+
+Dependent variable is categorical
+Typically used for 3+ Independent-Variable Conditions
+Should be equivalent to the Difference in Proportions Test for less than 3 Conditions
+Usually involved creating a Contingency Table
+http://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.chi2_contingency.html
+Choosing the Correct Test
+http://www.ats.ucla.edu/stat/stata/whatstat/
