@@ -1,0 +1,17 @@
+Project Overview
+In this project, you will use R and apply exploratory data analysis techniques to explore relationships in one variable to multiple variables and to explore a selected data set for distributions, outliers, and anomalies.
+
+Step One - Choose your Data Set
+Step Two - Get Organized: RMD, HTML, data.
+Step Three - Explore your Data
+Step Four - Document your Analysis
+- A stream-of-consciousness analysis and exploration of the data, quick and dirty plots (no titles).
+- 3 plots polished with appropriate labels, units, and titles
+-- a caption or description about what the plot shows.
+-- consult https://docs.google.com/document/d/1-f3wM3mJSkoWxDmPjsyRnWvNgM57YUPloucOIl07l4c/pub
+- A final section called “Reflection”
+Step Five - Knit your RMD file
+Step Six - Document your Data (similar to ?diamonds)
+- describe sources and explain variables
+- definition of any variables, units, levels of categorical variables, and the data generating process, such as how data was collected
+Step 7 - a text file with a list of Web sites, books, forums, blog posts, GitHub repositories etc used

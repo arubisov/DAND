@@ -2,6 +2,7 @@
 *.csv
 *.tsv
 *.osm*
+!p4-project/prosperLoandData-defs.csv
 
 # Created by https://www.gitignore.io/api/python,r
 
@@ -78,6 +79,7 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.html
+!/p4-project/projectTemplate.html
 
 # pyenv
 .python-version

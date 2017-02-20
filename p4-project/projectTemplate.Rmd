@@ -1,0 +1,579 @@
+Investigating the Prosper Loan Data by Anton Rubisov
+========================================================
+Prosper Marketplace is America's first peer-to-peer lending marketplace, with over $7 billion in funded loans (Wikipedia). They release their data to allow investors to analyze loan performance at the individual loan level, available for download via their API. Udacity made available a snapshot of the data from 03/11/2014 containing 113,937 loans with 81 variables on each loan. In this report I present exploratory data analysis of the loan data, investigating variables relating to loan performance, borrower characteristics, demographics, and chronology.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+# Load all of the packages that you end up using
+# in your analysis in this code chunk.
+
+# Notice that the parameter "echo" was set to FALSE for this code chunk.
+# This prevents the code from displaying in the knitted HTML output.
+# You should set echo=FALSE for all code chunks in your file.
+
+library(ggplot2)
+library(fiftystater)
+library(noncensus)
+library(ggrepel)
+library(dplyr)
+library(zoo)
+library(GGally)
+```
+
+# Data Overview
+```{r echo=FALSE, message=FALSE, warning=FALSE, Load_the_Data}
+# Load the Data
+loan <- read.csv("prosperLoanData.csv", sep=",")
+#loan_defs <- read.csv("prosperLoanData-defs.csv", sep=",")
+data("fifty_states")
+data("states")
+```
+The dataset consists of 81 variables, with almost 114,000 observations, and a filesize of 84MB. Definitely not massive, but at the point where it begins to get hard to just glance through it.
+
+The following columns are available in the Prosper data:
+```{r echo=FALSE}
+names(loan)
+```
+
+# Univariate Plots Section
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Univariate_Plots1}
+ggplot(data=loan, aes(x=LoanStatus)) +
+  geom_histogram(stat="count") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+About 1/3 of the data is from loans that are completed. About half are current loans in good standing, and the remainder are qualitatively 'bad' loans that have either been charged off, defaulted, or are currently in collections. In the analysis that follows I'll create a derived variable, a binary loan performance variable equal to either Good or Bad, based on these two buckets. It would be interesting to build a model to identify the probability of a loan going into collections.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Univariate_Plots2}
+ggplot(data = subset(loan, IncomeVerifiable="True"), aes(x = IncomeRange)) + 
+  geom_histogram(stat="count") +
+  scale_x_discrete(limits=c('Not displayed', 'Not employed', '$0', '$1-24,999',
+                            '$25,000-49,999', '$50,000-74,999',
+                            '$75,000-99,999', '$100,000+')) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  scale_y_log10()
+```
+
+Here I've logarithmically scaled the bin counts. With the relatively high number of incomes that are either \$0, not employed, or not displayed, this may not be the best measure of customer income range. But, it's noteworthy that the distribution is centered around the \$50,000/yr mark.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Univariate_Plots3}
+ggplot(data=subset(loan, ProsperRating..Alpha.!=''),
+       aes(x=ProsperRating..Alpha.)) +
+  geom_histogram(stat="count") +
+  scale_x_discrete(limits=c('AA','A','B','C','D','E','HR'))
+
+ggplot(data=subset(loan, CreditGrade!=''), aes(x=CreditGrade)) +
+  geom_histogram(stat="count") +
+  scale_x_discrete(limits=c('AA','A','B','C','D','E','HR'))
+
+ggplot(data=subset(loan, CreditGrade!='' & ProsperRating..Alpha.!=''), 
+       aes(x=with(loan, ifelse(CreditGrade=='',
+                               as.character(ProsperRating..Alpha.),
+                               as.character(CreditGrade))))) +
+  geom_histogram(stat="count") +
+  scale_x_discrete(limits=c('AA','A','B','C','D','E','HR'))
+```
+
+From the definitions file that accompanied the data, the CreditGrade rating is only available for pre-2009 data, after which the ProsperRating..Alpha. variable contains an alpha rating score (and this is the majority of the data). The final plot combines the two into one variable.
+
+From Wikipedia: Prosper has provided an increasing amount of information about prospective borrowers over time, while also making various changes to its credit policy. Prior to its 2008 'quiet period' and 2009 SEC registration, the company provided "Credit Grades" and other credit information about its prospective lenders. Following the SEC registration, the company created a new model that determined "Prosper Ratings" instead. Additionally, new prospective borrowers were required to have an FICO 8 credit score of at least 640, while returning borrowers only need a score of 600 to request a loan.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Univariate_Plots4}
+ggplot(data = loan, aes(x = DebtToIncomeRatio)) + 
+  geom_freqpoly(binwidth=0.05)
+
+ggplot(data = loan, aes(x = DebtToIncomeRatio)) + 
+  geom_freqpoly(binwidth=0.01) +
+  xlim(0, quantile(x=loan$DebtToIncomeRatio, probs=0.99, na.rm=TRUE))
+```
+
+Clear evidence of outliers! Who would have a 10 debt-to-income ratio?!
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Univariate_Plots5}
+ggplot(data = loan, aes(x = StatedMonthlyIncome)) + 
+  geom_freqpoly(binwidth=100)
+
+ggplot(data = subset(loan, IncomeVerifiable="True"), 
+       aes(x = StatedMonthlyIncome)) + 
+  geom_freqpoly(binwidth=500) +
+  xlim(0, quantile(x=loan$StatedMonthlyIncome, probs=0.995, na.rm=TRUE))
+
+```
+
+More outliers detected...the believability of earning half a million per month is questionable. But just for fun, let's see what occupations these people have.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Univariate_Plots6}
+summary(subset(loan$Occupation, loan$StatedMonthlyIncome > 100000))
+```
+
+Well, I suppose the Executives are believable. Not sure about that nurse though...
+
+Let's have a look at where these loans are originating from:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+vals <- summary(loan$BorrowerState)
+vals <- data.frame(code=names(vals), freq=vals)
+vals$region <- tolower(state.name[match(vals$code,state.abb)])
+
+p <- ggplot(vals, aes(map_id = vals$region)) + 
+  # map points to the fifty_states shape data
+  geom_map(aes(fill = vals$freq), map = fifty_states) +
+  scale_fill_continuous(low = "thistle2", high = "darkred", guide="colorbar") +
+  expand_limits(x = fifty_states$long, y = fifty_states$lat) +
+  coord_map() +
+  scale_x_continuous(breaks = NULL) + 
+  scale_y_continuous(breaks = NULL) +
+  theme(legend.position = "bottom", panel.background = element_blank())
+p
+```
+
+The heatmap shows a strong concentration of borrowers in California. Rather than being a phenomenon representing loan brokerage in the US, this is likely a characteristic of Prosper itself - the company is based out of San Francisco and caters predominantly to the more technologically-inclined, with the Valley representing the largest such concentration in the US. 
+
+However, since population isn't evenly distributed across the states, I'll have a look at these figures again as a percentage of the state population:
+
+```{r echo=FALSE, warning=FALSE}
+
+vals$rel <- vals$freq / sum(vals$freq)
+vals$relpop <- vals$freq / 
+  strtoi(states$population[match(vals$code, states$state)]) * 100
+
+ggplot(vals, aes(map_id = vals$region)) + 
+  # map points to the fifty_states shape data
+  geom_map(aes(fill = vals$relpop), map = fifty_states) +
+  scale_fill_continuous(low = "thistle2", high = "darkred", guide="colorbar") +
+  expand_limits(x = fifty_states$long, y = fifty_states$lat) +
+  coord_map() +
+  scale_x_continuous(breaks = NULL) + 
+  scale_y_continuous(breaks = NULL)
+
+vals %>% filter(rank(desc(relpop))<=5)
+```
+
+New York now comes out on top, with about 1 Prosper user per 100 residents, but is interestingly now followed by Virginia (0.52) and Alabama (0.24).
+
+Since Prosper is a peer-to-peer loan service, let's investigate a little bit of the structure of the borrowing and lending data. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width = 6, fig.height = 2}
+summary(loan$LenderYield)
+
+ggplot(data=loan, aes(x=1, y=loan$LenderYield)) +
+  geom_violin(scale="count", width=0.2) +
+  geom_boxplot(fill="white", width=0.2, alpha=0.3) +
+  coord_cartesian(ylim=c(0,1.10)) +
+  coord_flip()
+```
+
+Negative yields are of course a possibility, as lender yield is defined as the interest rate on the loan minus the servicing fee -- and in a few unfortunate cases, the servicing fees would have dominated any returns on the (likely written-off) loan. Fortunately, this happened in only 12 cases. Interestingly, one was observed to be an AA rated loan. In that particular case, the borrower repaid his $1,000 loan in the first month, leaving the lender with the servicing fee and zero return. I'll look more at lender yield across time in the bivariate analysis.
+
+In the analysis that follows I'll be exploring loan repayment and borrower rates. Here I'll begin by plotting histograms of those variables to understand their structure.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(data=loan, aes(x=BorrowerRate)) +
+  geom_histogram(stat="count", na.rm = TRUE) +
+  coord_cartesian(ylim = c(1, 700)) +
+  scale_x_continuous(limits = c(0.05, 0.35)) +
+  scale_y_log10()
+```
+
+Here I've used a log scale for the y-axis. The distribution of borrower rates shows the characeristic behaviour, of frequent spikes with lulls between, of preference for whole or round numbers. very likely the spikes correspond to, for example, 0.26, 0.27, 0.275, 0.28, etc. Here I have scaled the x axis to between 0.05 and 0.35, which cut off some of the buckets at x < 0. Clearly some borrowers were able to attain negative rates, which isn't necessarily a data hygiene issue.
+
+# Bivariate Plots Section
+
+In beginning bivariate analysis, we'll start with the typical approach of identifying some variables of interest and plotting a correlation matrix.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Let's select only the variables of interest.
+selected_vars <- c("BorrowerRate","DebtToIncomeRatio","Recommendations",
+                   "ProsperScore","LoanOriginalAmount",
+                   "DelinquenciesLast7Years", "MonthlyLoanPayment")
+
+cols <- loan[,selected_vars]
+cols <- na.omit(cols)
+
+#ggpairs(cols)
+
+ggcorr(cols, label = TRUE, palette = "RdGy", label_size = 4, nbreaks = 4,
+       label_color = "white", hjust = 0.9, size = 4, layout.exp = 1)
+```
+
+We'll begin to look at how the borrower's rate changes with respect to other variables.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(scales)
+
+loan$LoanOriginationDateDate <- as.Date(loan$LoanOriginationDate)
+ggplot(data=loan, aes(x=loan$LoanOriginationDateDate, y=BorrowerRate)) +
+  geom_point(alpha = 0.5) +
+  geom_line (stat= 'summary', fun.y = quantile, fun.args = list(probs = .5),
+             color = 'blue') +
+  geom_smooth() +
+  scale_x_date(breaks = date_breaks("years"), labels = date_format("%b-%y")) 
+
+ggplot(data=loan, aes(x=Recommendations, y=BorrowerRate)) +
+  geom_point(alpha = 0.5) +
+  geom_line (stat= 'summary', fun.y = quantile, fun.args = list(probs = .5),
+             color = 'blue') +
+  geom_smooth() +
+  geom_jitter()
+
+ggplot(data=loan, aes(x=loan$InvestmentFromFriendsCount, y=BorrowerRate)) +
+  geom_point(alpha = 0.5) +
+  geom_line (stat= 'summary', fun.y = quantile, fun.args = list(probs = .5),
+             color = 'blue') +
+  geom_smooth() +
+  geom_jitter()
+
+ggplot(data=loan, aes(x=loan$DebtToIncomeRatio, y=BorrowerRate)) +
+  geom_point(alpha = 0.5) + 
+  geom_line (stat= 'summary', fun.y = quantile, fun.args = list(probs = .5),
+             color = 'blue') +
+  geom_smooth()
+```
+
+From the last plot, we see that debt-to-income ratio has little explanatory power for the rate the borrower attains. The second and third have long tails that show a general tendency that as the number of investments from friends or the number of recommendations increases, the borrowing rate attained decreases. These are largely driven by outliers in the data, but do support intuition.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cor.test(loan$Recommendations, loan$DebtToIncomeRatio, method='pearson')
+```
+
+The first plot suffers from overplotting, which a little jitter and transparency may help understand better:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(data=loan, aes(x=loan$LoanOriginationDateDate, y=BorrowerRate)) +
+  geom_point(alpha = 0.01,
+             position = position_jitter(h=0)) +
+  scale_x_date(breaks = date_breaks("years"), labels = date_format("%b-%y"))
+```
+
+This plot has a few interesting anomoalies. First, the gap between late 2008 and mid 2009 is supported by the Securities and Exchange Commission's finding on November 24, 2008 that Prosper was in violation of the Securities Act. This prompted the SEC to slap a cease and desist order on Prosper, which was lifted in July 2009 after Prosper registered with the SEC.
+
+The mode of borrower rates jumped from about 0.29 to 0.35 in late 2007. This coincides with the US housing crisis, and starting in Sep 2007 the effective Federal Funds rate began to plummet from a high of 5.26% down to 0.16% in Dec 2008. It's interesting that at this time borrower rates on Prosper only increased - perhaps the credit crisis prompted lenders to demand more on the Prosper platform despite plummeting interest rates. 
+
+How does a borrow's credit rating affect the rate they receive?
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(data=loan, aes(x=ProsperRating..Alpha., y=BorrowerRate)) +
+    geom_boxplot(aes(fill = ProsperRating..Alpha.), alpha=0.3) +
+    guides(fill = guide_legend()) +
+    scale_x_discrete(limits=c('AA','A','B','C','D','E','HR'))
+```
+
+Precisely as expected - the higher the credit rating, the lower the rate the borrower receives. But how well does the credit rating, or in this case score, predict whether the loan will perform or not?
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+loan$LoanStatusBinary <- ifelse((loan$LoanStatus == "Cancelled") |
+                          (loan$LoanStatus == "Chargedoff") |
+                          (loan$LoanStatus == "Defaulted") |
+                          (substr(loan$LoanStatus, 1, 8) == "Past Due"), "Bad",
+                          "Good")
+                            
+ggplot(data=loan, aes(x=LoanStatusBinary, y=ProsperScore)) +
+    geom_boxplot() +
+    guides(fill = guide_legend())
+```
+
+From the boxplots we see that the distribution of Prosper Scores was significantly right skewed for loans that turned out to be non-performing, as compared with the normal distribution for good loans. This indicates that the Prosper Score is better than random at assigning risk scores. In the multivariate analysis we can see how this changes across different populations (by income, by occupation, etc).
+
+# Bivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the investigation. How did the feature(s) of interest vary with other features in the dataset?
+
+In this section my primary feature of interest was borrower rate. I anticipated that as the borrower became less anonymous to lenders - either with an increase in recommendations from others, or with an increase in investments made by friends - that the rate they attained would lower. While the plots did trend in that direction, there was insufficient data to draw conclusions. 
+
+We saw that the Prosper Score was an strong predictor of whether a particular loan would perform, or would go past due / default, and the Prosper Rating (the Alpha rating based off the score) was itself indicative of the rate the borrower would receive. This indicates a healthy system of credit ratings, rate-setting, and loan performance. 
+
+### Did you observe any interesting relationships between the other features (not the main feature(s) of interest)?
+
+The distribution of borrower rates across time was unexpected, particularly as the time horizon was inclusive of the 2007-08 credit crisis, but the rates were rather stable, if not increasing, over that same time horizon. 
+
+### What was the strongest relationship you found?
+From the ggpairs matrix at the beginning of the bivariate analysis, there's a very high correlation of 0.918 between the LoanOriginalAmount and MonthlyLoanPayment, in which three distinct linear relationships are observable. This is of course no surprise - for any given loan amount, there are three possible tenures (1y, 3y, and 5y), which could have any one of three monthly payment amounts - the strong correlation is reflective of exactly this, with anything that falls outside the linear relationship beeing a payment that has gone past due and incurred interest. 
+
+
+# Multivariate Plots Section
+Picking up the bivariate analysis done on Prosper Score against loan repayment, we explore how the relationship extends across different segments of the population to see whether any given segment is inaccurately predicted.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Multivariate_Plots}
+occs <- unique(loan$Occupation)
+
+ggplot(data=subset(loan, Occupation %in% occs[1:16]),
+       aes(x=LoanStatusBinary, y=ProsperScore)) +
+    geom_boxplot() +
+    facet_wrap(~Occupation)
+
+ggplot(data=subset(loan, Occupation %in% occs[17:32]),
+       aes(x=LoanStatusBinary, y=ProsperScore)) +
+    geom_boxplot() +
+    facet_wrap(~Occupation)
+
+ggplot(data=subset(loan, Occupation %in% occs[33:48]),
+       aes(x=LoanStatusBinary, y=ProsperScore)) +
+    geom_boxplot() +
+    facet_wrap(~Occupation)
+
+ggplot(data=subset(loan, Occupation %in% occs[49:64]),
+       aes(x=LoanStatusBinary, y=ProsperScore)) +
+    geom_boxplot() +
+    facet_wrap(~Occupation)
+```
+
+While the trend seems to be consistent, there are some notable exceptions. We'll look at one in particular, for Homemakers:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(data=subset(loan, Occupation == 'Homemaker'), 
+       aes(x=LoanStatusBinary, y=ProsperScore)) +
+    geom_boxplot() +
+    guides(fill = guide_legend())
+```
+
+From a post hoc perspective, it's clear that Prosper Scores for homemakers did not accurately predict whether the borrower would fail to make payments. 
+
+Continuing the analysis of how rates have evolved over time, and the lack of correlation with plummeting interest rates in 07-08, We'll look at how other loan variables have changed over time.
+
+```{r}
+unique(loan$Term)
+```
+
+Prosper offers loans in 12m, 36m, and 60m terms.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Summarize the data by yearmth_orig_date and Term
+# The metrics calculated by yearmth_orig_date and Term are
+# mean borrower rate, mean loan origination amount and 
+# mean monthly loan payment
+loan$LoanOrigDateYM <- substr(as.character(loan$LoanOriginationDateDate), 1,7)
+
+loan$LoanOrigDateYM <- as.Date(paste(loan$LoanOrigDateYM,"-01",sep=""))
+
+loan$Term <- factor(loan$Term)
+
+AvgByDateTerm <- loan %>%
+  group_by(LoanOrigDateYM,Term) %>%
+  summarise(
+    Rate_mean = mean(BorrowerRate, na.rm = TRUE),
+    LoanAmount_mean = mean(LoanOriginalAmount, na.rm = TRUE),
+    LoanCount = n()
+  )
+
+ggplot(data=AvgByDateTerm, aes(x=LoanOrigDateYM, y=LoanCount, fill=Term)) + 
+    geom_bar(stat = "identity")
+
+ggplot(data=AvgByDateTerm, aes(x=LoanOrigDateYM, y=LoanAmount_mean)) +
+    geom_line(aes(colour=Term)) +
+    geom_line (stat= 'summary', fun.y = quantile, fun.args = list(probs = .5),
+               color = 'blue') +
+    geom_smooth()
+```
+
+Three-year loans were the original tenure offered by Prosper in 2006, and saw a relatively stable rate of origination. Following the discontinuation of one-year loans in 2013, a surge in origination is seen in 36m and 60m.
+
+To end the multivariate analysis, we'll explore segmentation by occupation. First I'm curious how income is distributed among a few occupations, chosen particularly because I'm considering a career in any of the four:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+income_ranges <- c('$1-24,999', '$25,000-49,999', '$50,000-74,999',
+                   '$75,000-99,999', '$100,000+')
+occupations <- c('Analyst', 'Scientist', 'Military Officer',
+                 'Computer Programmer')
+
+dfl <- subset(loan, Occupation %in% occupations & IncomeVerifiable=="True") %>% 
+  group_by(Occupation,IncomeRange) %>% 
+  summarise(n=n()) %>% 
+  group_by(Occupation) %>% 
+  mutate(perc=100*n/sum(n))
+
+ggplot(data = dfl, aes(x = IncomeRange, y = perc)) + 
+  geom_bar(stat='identity') +
+  facet_wrap(~Occupation) +
+  scale_x_discrete(limits=income_ranges) +
+  ylab('Percent') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+Looks like I should be really thinking about that career as a military officer ...
+
+Next I'll look at the trend of loan origination for these specific careers:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+occupations <- c('Analyst', 'Scientist', 'Military Officer', 'Computer Programmer')
+
+CountByDateOccupation <- subset(loan, Occupation %in% occupations &
+                                  IncomeVerifiable=="True") %>% 
+  group_by(Occupation,LoanOrigDateYM) %>% 
+  summarise(LoanCount=n())
+
+ggplot(data = CountByDateOccupation, 
+       aes(x = LoanOrigDateYM, y = LoanCount, color=Occupation)) + 
+  geom_point() +
+  geom_line()
+```
+
+Computer programmers and analysts have almost indistinguishable trajectories for loan origination, as do (interestingly enough) military officers and scientists. That the former camp far surpasses the latter in loan origination is hardly surprising, as the former tend to be far more entrepreneurial, and are perhaps using the Prosper platform to raise funds for their entrepreneurial endeavors.
+
+Finally, I'll combine the analysis by occupation, salaries, and good/bad performance of loans to look for a trend in income vs. rate performance, by occupation. The annualized income buckets are too coarsely granular, so I'll instead use the mean monthly income.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+StatusByIncomeOccupation <- loan %>% 
+  group_by(Occupation) %>% 
+  summarise(
+    MonthlyIncome_mean = mean(StatedMonthlyIncome, na.rm = TRUE),
+    PercentageGood_mean = sum(LoanStatusBinary == "Good", na.rm = TRUE) /
+      sum(LoanStatusBinary == "Bad" | LoanStatusBinary == "Good", 
+          na.rm = TRUE) * 100,
+    LoanCount = n()
+  )
+
+ggplot(data = StatusByIncomeOccupation, 
+       aes(x = MonthlyIncome_mean, y = PercentageGood_mean, size=LoanCount)) + 
+  geom_point() +
+  geom_smooth(show.legend=FALSE) +
+  labs(size="LoanCountByOcc")
+```
+
+There's a clear and expected tendency that as income increases, as done the probability of loan repayment - and it's interesting to note which occupations fall above/below that curve on average. I'll clean this chart up as one of the final plots.
+
+# Multivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the investigation. Were there features that strengthened each other in terms of looking at your feature(s) of interest?
+On loan origination, there was an interesting spike observed in the number of 36m and 60m loans after the 12m loan was discontinued. It's disproportionate in magnitude to the number of 12m loans that were on the books, and I would hazard to guess that there's a third explanatory factor involved that simultaneously supports both the discontinuation and surge in origination. 
+
+On loan repayment, the boxplots suggested that good vs. bad performance is adequately predicted by the Prosper Score assigned to borrowers. There were notable exceptions observed, however, for certain occupations, as we saw for those in the Homemaker category.
+
+### Were there any interesting or surprising interactions between features?
+It was interesting to note how strongly the Analyst and Computer Programmer occupations paralleled one another in terms of loan origination over time, not only in terms of correlation but in raw numbers. Though a highly unexpected phenomenon, I wonder whether any of this is attributed to a vagueness in certain industries between the two job descriptions.
+
+------
+
+# Final Plots and Summary
+
+### Plot One
+```{r echo=FALSE, warning=FALSE, Plot_One}
+
+vals <- summary(loan$BorrowerState)
+vals <- data.frame(code=names(vals), freq=vals)
+vals$region <- tolower(state.name[match(vals$code,state.abb)])
+vals$rel <- vals$freq / sum(vals$freq)
+
+ggplot(vals, aes(map_id = vals$region)) + 
+  # map points to the fifty_states shape data
+  geom_map(aes(fill = vals$freq), map = fifty_states) +
+  scale_fill_continuous(low = "thistle2", high = "darkred", guide="colorbar") +
+  expand_limits(x = fifty_states$long, y = fifty_states$lat) +
+  coord_map() +
+  scale_x_continuous(breaks = NULL) + 
+  scale_y_continuous(breaks = NULL) +
+  labs(title="Prosper Borrowers by State", fill="Frequency", x="", y="") +
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666",
+                                  face="bold", size=18, hjust=0.5)) +
+  theme(legend.position = "bottom", panel.background = element_blank()) +
+  fifty_states_inset_boxes() +
+  geom_text(aes(x = -120, y = 37, label = 'CA', group = NULL),
+            size = 3, color='white') +
+  geom_text(aes(x = -119, y = 36, label = '13%', group = NULL),
+            size = 3, color='white') +
+  geom_text(aes(x = -99, y = 32, label = 'TX', group = NULL),
+            size = 3, color='white') +
+  geom_text(aes(x = -99, y = 30.5, label = '6%', group = NULL),
+            size = 3, color='white')
+```
+
+### Description One
+The heatmap shows a strong concentration of borrowers in California, representing 13% of the country. Rather than being a phenomenon representing loan brokerage in the US, this is likely a characteristic of Prosper itself - the company is based out of San Francisco and caters predominantly to the more technologically-inclined, with the Valley representing the largest such concentration in the US. Texas, New York, and Florida are the next top three states by borrowers, at about 6% each. However, 
+
+### Plot Two
+```{r echo=FALSE, warning=FALSE, Plot_Two}
+
+loan$LoanOrigDateYQ <- as.yearqtr(loan$LoanOriginationDateDate,
+                                  format = "%Y-%m-%d %HH:%MM:%SS")
+
+AvgByDateTerm <- loan %>%
+  group_by(LoanOrigDateYQ,Term) %>%
+  summarise(
+    Rate_mean = mean(BorrowerRate, na.rm = TRUE),
+    LoanAmount_mean = mean(LoanOriginalAmount, na.rm = TRUE),
+    LoanCount = n()
+  )
+
+ggplot(data=AvgByDateTerm, aes(x=LoanOrigDateYQ, y=LoanCount, fill=Term)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette="Spectral") +
+  labs(title='Prosper Loan Origination by Term and Year Quarter',
+       x='Origination Date Year Quarter',
+       y='Loan Origination Count') +
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666",
+                                  face="bold", size=18, hjust=0.5)) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  scale_x_yearqtr(format = "%Y Q%q") 
+```
+
+### Description Two
+This plot shows the number of loan originations by the year and quarter of its origination, and by its term - 1y, 3y, or 5y - where originations are scaled by a square root transformation. 
+
+The lull in 2009 is the Prosper 'quiet period' prior to registration with the SEC. In late 2010, 1y term loans were introduced, as the platform was gaining popularity. 1y loans were cancelled in 2013, which correlated strongly with a surge in loan originations in 3y and 5y terms, though disproportionately. I would opine that while the cancellation of the 1y loans did play a factor in increasing origination of the other terms, it is more likely that the increase is explained by an increasing popularity in the platform. 
+
+### Plot Three
+```{r echo=FALSE, warning=FALSE, Plot_Three}
+
+ggplot(data = StatusByIncomeOccupation, 
+       aes(x = MonthlyIncome_mean, y = PercentageGood_mean, size=LoanCount)) + 
+  geom_point(show.legend=TRUE) +
+  geom_smooth(method='loess', show.legend=FALSE) +
+  geom_label_repel(data = subset(StatusByIncomeOccupation, LoanCount > 4000),
+                   aes(label=Occupation), show.legend=FALSE) +
+  geom_label_repel(data = subset(StatusByIncomeOccupation,
+                                 PercentageGood_mean > 90),
+                   aes(label=Occupation), show.legend=FALSE) +
+  geom_label_repel(data = subset(StatusByIncomeOccupation,
+                                 PercentageGood_mean < 75),
+                   aes(label=Occupation), show.legend=FALSE) +
+  geom_label_repel(data = subset(StatusByIncomeOccupation,
+                                 MonthlyIncome_mean < 2100),
+                   aes(label=Occupation), show.legend=FALSE) +
+  labs(title="Loan Repayment by Monthly Income and Occupation",
+       x="Mean Stated Monthly Income [USD]",
+       y="Mean Percentage Loan Repayment [%]",
+       size="Loan Count by\nOccupation") +
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666",
+                                  face="bold", size=18, hjust=0.5))
+```
+
+### Description Three
+This plot looks at the percentage timely loan repayments versus mean stated monthly income, grouped by the borrowers' occupations. To assess loan repayment, each loan is given a binary value of either 'good' or 'bad', where the 'bad' loans are those that were either cancelled, charged off, defaulted, or past due, and loans are 'good' otherwise.
+
+The plot exhibits a highly expected trend of increased loan repayment with increasing monthly income, driven of course by the expectation that as ones income is higher and more reliably, they are better able to make principal and interest payments. Notably, the majority of occupations fall within the 80-90% timely repayment range.
+
+Equally of interest are those occupations that fall far away from the curve of best fit. Students, for example, have a very low stated monthly income, but are among the most likely to repay loans. Realtors are at the other end of the spectrum, with a relatively high monthly income, but are 20% less likely than curve of best fit would suggest to repay their loans. Stability and verifiability of income may be a factor here, as it could be that students have substantial income sources that are unverifiable.
+
+------
+
+# Reflection
+
+As a newcomer to R, there was a substantial learning curve for getting up to speed with the syntax and API. I was happy to find that the vast majority of what I wanted to achieve was covered by the help function, package documentation, and stackoverflow answers - the community support for the language is clearly high.
+
+While the Prosper Loan data is by no means huge, at under 100 MB, the number of variables did make it tricky to work with. The data came rather clean, with no work having to be done to understand column names, or transform them into usable format (with the single exception of state names being in a case different from that provided by the R "state" dataframe). Unlike with 'mtcars' or 'diamonds', the number of variables made it not-obvious which variables were of interest or worth exploring. My approach was to begin with a few and incorporate more as it became needed, and I regret taking this approach. In the future, I'd like to first go through and highlight all variables I want to explore *before* diving in, as this led to tunnel vision and ultimately not touching on some of the ones that I later realized would be of interest. 
+
+The dplyr package, though I avoided it at first, is very useful and very powerful, as it allowed me to create new derived variables with great ease. ggplot, surprisingly enough, became intuitive by the end of the analysis. Overplotting was a major problem at times, but adding just one or two layers to ggplot made this easily rectifiable.
+
+My single biggest takeaway is to work with data that I find inherently interesting, and to ask questions rather than to explore blindly. The exploratory data analysis can quickly become a chore if the exploration being done, or results being gleaned, are of no personal interest to the explorer. Conversely, understanding what questions I want to ask of the data, and having a personal interest in understanding the answers, makes it not feel like work.
+
+
+# Links Used
+
+https://en.wikipedia.org/wiki/Prosper_Marketplace
+
+https://gist.github.com/cdesante/4252133
+
+https://cran.r-project.org/web/packages/fiftystater/vignettes/fiftystater.html
+
+http://stackoverflow.com/questions/24247285/combine-facet-wrap-of-line-plot1st-dataset-with-facet-wrap-of-point-plot2nd-d
+
+https://jasonicarter.github.io/Prosper-EDA-R/
+
+https://rpubs.com/grace-pehl/prosper
+
+http://rpubs.com/dksmith01/analysis-prosper-lending-data
+
+https://rstudio-pubs-static.s3.amazonaws.com/68611_df00687bfcf94145ab29659d62ca07dd.html
+
+http://stackoverflow.com/questions/21571703/format-date-as-year-quarter
+
+https://briatte.github.io/ggcorr/#controlling-the-coefficient-labels
+
